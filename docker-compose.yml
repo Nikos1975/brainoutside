@@ -34,7 +34,7 @@ x-app: &app
       required: false  # Coolify injects env directly; a file is optional
   environment: &app-env
     DJANGO_SETTINGS_MODULE: config.settings.prod
-    DATABASE_URL: postgres://brain:${POSTGRES_PASSWORD:?}@postgres:5432/brain    
+    DATABASE_URL: postgres://brain:${SERVICE_PASSWORD_64_POSTGRES}@postgres:5432/brain    
     REDIS_URL: redis://redis:6379/0
     BRAIN_REPO_DIR: /data/brain-repo
     BRAIN_VIEWS_DIR: /data/brain-views
@@ -135,7 +135,7 @@ services:
     environment:
       POSTGRES_DB: brain
       POSTGRES_USER: brain
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_POSTGRES}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
