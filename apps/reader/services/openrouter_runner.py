@@ -138,7 +138,7 @@ def _map_result(result: AgentResult):
 def _error_label(exc: Exception) -> str:
     detail = str(exc).replace("\n", " ").strip()
     label = exc.__class__.__name__
-    return f"{label}: {detail[:120]}" if detail else label
+    return (f"{label}: {detail}" if detail else label)[:128]
 
 
 async def _check_gates(*, exempt_daily_cap: bool, candidate_key: str = "") -> str:
@@ -180,8 +180,10 @@ async def _create_operation(kind: str, prompt_hash_input: str, subject=None):
 async def _finish_operation(op, run) -> None:
     op.finished_at = timezone.now()
     op.ok = run.ok
-    op.error_class = run.error_class
-    op.model = run.model
+    # Persistence must not replace the provider failure with a secondary
+    # DataError. These lengths mirror SdkOperation's CharField limits.
+    op.error_class = str(run.error_class or "")[:128]
+    op.model = str(run.model or "")[:64]
     op.duration_ms = run.duration_ms
     op.num_turns = run.num_turns
     op.cost_usd = run.cost_usd
