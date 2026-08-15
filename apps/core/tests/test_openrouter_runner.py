@@ -41,6 +41,15 @@ def test_public_tier_explicitly_allows_free_model_policy():
     assert policy["require_parameters"] is True
 
 
+def test_provider_error_label_fits_ledger_column():
+    error = RuntimeError("x" * 500)
+
+    label = openrouter_runner._error_label(error)
+
+    assert label.startswith("RuntimeError: ")
+    assert len(label) == 128
+
+
 def test_json_schema_becomes_strict_native_output():
     schema = {
         "type": "object",
