@@ -89,5 +89,6 @@ def test_every_wizard_validated_key_carries_a_cleaner() -> None:
         "MAX_TURNS_READER",
         "MAX_TURNS_FEEDER",
         "SDK_TIMEOUT_SECONDS",
+        "OPENROUTER_FALLBACK_PRICES",
     ):
         assert cleaners.get(key) is not None, f"{key} stores as typed"
