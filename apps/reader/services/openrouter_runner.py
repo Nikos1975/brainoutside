@@ -267,24 +267,25 @@ async def run_agent_async(
 ):
     sdk = _sdk()
     api_key = await _check_gates(exempt_daily_cap=False)
-    bundle, read_paths = await sync_to_async(_snapshot_bundle)(tier)
-    messages = _messages(append_system=append_system, prompt=prompt, bundle=bundle)
-    payload = await sync_to_async(_payload)(
-        kind=kind,
-        tier=tier,
-        messages=messages,
-        output_format=output_format,
-        stream=False,
-    )
     ledger_kind = "assemble_context" if kind == "reader" else "feed_extraction"
     op = await _create_operation(
         ledger_kind,
-        f"openrouter|{kind}|{tier}|{append_system}|{prompt}|{bundle}",
+        f"openrouter|{kind}|{tier}|{append_system}|{prompt}",
         subject,
     )
-    run = sdk.RunResult(ok=False, text="", error_class="Unknown", read_paths=read_paths)
+    read_paths: list[str] = []
+    run = sdk.RunResult(ok=False, text="", error_class="Unknown")
     started = time.monotonic()
     try:
+        bundle, read_paths = await sync_to_async(_snapshot_bundle)(tier)
+        messages = _messages(append_system=append_system, prompt=prompt, bundle=bundle)
+        payload = await sync_to_async(_payload)(
+            kind=kind,
+            tier=tier,
+            messages=messages,
+            output_format=output_format,
+            stream=False,
+        )
         timeout = await sync_to_async(config.sdk_timeout_seconds)()
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(OPENROUTER_URL, headers=_headers(api_key), json=payload)
@@ -405,28 +406,30 @@ async def stream_agent(
     """Stream one native completion while preserving the existing contract."""
     sdk = _sdk()
     api_key = await _check_gates(exempt_daily_cap=False)
-    bundle, read_paths = await sync_to_async(_snapshot_bundle)(tier)
-    messages = _messages(append_system=append_system, prompt=prompt, bundle=bundle)
-    payload = await sync_to_async(_payload)(
-        kind=kind,
-        tier=tier,
-        messages=messages,
-        output_format=None,
-        stream=True,
-    )
     ledger_kind = "chat" if kind == "reader" else "feed_extraction"
     op = await _create_operation(
         ledger_kind,
-        f"openrouter|{kind}|{tier}|{append_system}|{prompt}|{bundle}",
+        f"openrouter|{kind}|{tier}|{append_system}|{prompt}",
         subject,
     )
-    run = sdk.RunResult(ok=False, text="", error_class="Unknown", read_paths=read_paths)
+    read_paths: list[str] = []
+    run = sdk.RunResult(ok=False, text="", error_class="Unknown")
     chunks: list[str] = []
     raw_usage: dict = {}
-    model = str(payload["model"])
+    model = ""
     started = time.monotonic()
     client_gone = False
     try:
+        bundle, read_paths = await sync_to_async(_snapshot_bundle)(tier)
+        messages = _messages(append_system=append_system, prompt=prompt, bundle=bundle)
+        payload = await sync_to_async(_payload)(
+            kind=kind,
+            tier=tier,
+            messages=messages,
+            output_format=None,
+            stream=True,
+        )
+        model = str(payload["model"])
         timeout = await sync_to_async(config.sdk_timeout_seconds)()
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
