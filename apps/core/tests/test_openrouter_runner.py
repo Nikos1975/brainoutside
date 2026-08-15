@@ -25,7 +25,7 @@ def test_public_tier_explicitly_allows_free_model_policy():
     policy = openrouter_runner._provider_policy("public", structured=False)
     assert policy["sort"] == "price"
     assert policy["data_collection"] == "allow"
-    assert policy["require_parameters"] is False
+    assert policy["require_parameters"] is True
 
 
 def test_claude_schema_wrapper_is_translated():
