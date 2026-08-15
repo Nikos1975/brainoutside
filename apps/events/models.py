@@ -80,12 +80,14 @@ def credential_via(credential) -> dict:
 
 
 class SdkOperation(models.Model):
-    """The token ledger — one row per Claude Agent SDK invocation.
+    """The token ledger — one row per model invocation.
 
     Written BEFORE the run (`ok=None` = running) and finalized after, so a
     killed worker never produces an invisible spend (PLAN.md §3, grill C6).
-    `cost_usd` is the CLI's estimate and display-only; raw token counts are
-    canonical — cost is recomputable from the price table (grill C23).
+    `cost_usd` is provider-reported when available and otherwise derived from
+    the configured fallback token schedule. `reserved_cost_usd` makes the
+    daily cap concurrency-safe before the provider call; raw token counts
+    remain canonical and permit later repricing (grill C23).
     Usage fields stay NULL on errored/killed runs: those runs legitimately
     have no usage to report.
     """
@@ -110,6 +112,12 @@ class SdkOperation(models.Model):
     cache_read_tokens = models.BigIntegerField(null=True, blank=True)
     cache_write_tokens = models.BigIntegerField(null=True, blank=True)
     cost_usd = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    # Held before a provider call so concurrent workers cannot all pass the
+    # daily breaker against the same stale total. Released on finalization.
+    reserved_cost_usd = models.DecimalField(
+        max_digits=10, decimal_places=6, default=0
+    )
+    cost_source = models.CharField(max_length=16, blank=True, default="")
     duration_ms = models.BigIntegerField(null=True, blank=True)
     num_turns = models.IntegerField(null=True, blank=True)
     # Hash of the composed prompt (system + user), for reproducibility (C7).
