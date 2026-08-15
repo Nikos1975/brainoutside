@@ -9,11 +9,12 @@ page renders and what SdkRunner reads (PLAN.md §3 `apps/brainconfig`).
 """
 from __future__ import annotations
 
+import json
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Optional
 
 from django.conf import settings as dj_settings
 
@@ -24,6 +25,27 @@ from .models import AppSetting
 # SDK run kinds that carry their own model/budget knobs. `test_connection`
 # deliberately reuses the reader settings — it is a ping, not a kind.
 SDK_KINDS = ("reader", "feeder")
+
+# Conservative upper-bound prices for the default OpenRouter models.  Values
+# are USD per million text tokens. DeepSeek's current promotional price is
+# lower; retaining the undiscounted rate keeps the breaker safe when the
+# promotion ends. Operators must update this map when changing model slugs.
+DEFAULT_OPENROUTER_FALLBACK_PRICES = json.dumps(
+    {
+        "deepseek/deepseek-v4-flash-0731": {
+            "input_per_million": "0.09",
+            "output_per_million": "0.18",
+        },
+        "poolside/laguna-s-2.1:free": {
+            "input_per_million": "0",
+            "output_per_million": "0",
+            "cache_read_per_million": "0",
+            "cache_write_per_million": "0",
+        },
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
 
 
 @dataclass(frozen=True)
@@ -51,7 +73,7 @@ class SettingSpec:
     #: the wizard validates the same key, the spec points at the SAME
     #: function (the repo URL uses `setup_services.normalise_repo_input`)
     #: so the two surfaces cannot drift. None = store as typed.
-    clean: Optional[Callable[[str], str]] = None
+    clean: Callable[[str], str] | None = None
 
 
 def _clean_repo_url(raw: str) -> str:
@@ -95,6 +117,49 @@ def _clean_ai_provider(raw: str) -> str:
     if value not in {"claude", "openrouter"}:
         raise ValueError("must be either claude or openrouter")
     return value
+
+
+def _clean_openrouter_fallback_prices(raw: str) -> str:
+    """Validate and canonicalise model-keyed fallback token prices."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"must be valid JSON: {exc.msg}") from None
+    if not isinstance(parsed, dict) or not parsed:
+        raise ValueError("must be a non-empty JSON object keyed by model slug")
+
+    allowed = {
+        "input_per_million",
+        "output_per_million",
+        "cache_read_per_million",
+        "cache_write_per_million",
+    }
+    required = {"input_per_million", "output_per_million"}
+    canonical: dict[str, dict[str, str]] = {}
+    for model, rates in parsed.items():
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("every model key must be a non-empty string")
+        if not isinstance(rates, dict):
+            raise ValueError(  # noqa: TRY004 - invalid operator input, not API misuse
+                f"prices for {model!r} must be a JSON object"
+            )
+        missing = required - rates.keys()
+        unknown = rates.keys() - allowed
+        if missing:
+            raise ValueError(f"{model!r} is missing {', '.join(sorted(missing))}")
+        if unknown:
+            raise ValueError(f"{model!r} has unknown keys: {', '.join(sorted(unknown))}")
+        clean_rates: dict[str, str] = {}
+        for name, raw_value in rates.items():
+            try:
+                value = Decimal(str(raw_value))
+            except InvalidOperation:
+                raise ValueError(f"{model!r} {name} must be a number") from None
+            if not value.is_finite() or value < 0:
+                raise ValueError(f"{model!r} {name} must be finite and non-negative")
+            clean_rates[name] = str(value)
+        canonical[model.strip()] = clean_rates
+    return json.dumps(canonical, separators=(",", ":"), sort_keys=True)
 
 
 REGISTRY: tuple[SettingSpec, ...] = (
@@ -182,6 +247,17 @@ REGISTRY: tuple[SettingSpec, ...] = (
         "Optional HTTP-Referer attribution header, for example the public "
         "BrainOutside URL.",
         default="",
+    ),
+    SettingSpec(
+        "OPENROUTER_FALLBACK_PRICES",
+        "OpenRouter fallback prices",
+        "JSON map of exact model slugs to conservative USD-per-million-token "
+        "input/output/cache rates. Used when native cost is unavailable; an "
+        "unlisted model fails closed instead of bypassing spend limits.",
+        default=DEFAULT_OPENROUTER_FALLBACK_PRICES,
+        env_wins=True,
+        max_len=5000,
+        clean=_clean_openrouter_fallback_prices,
     ),
     SettingSpec(
         "CLAUDE_MODEL_READER",
@@ -385,6 +461,19 @@ def openrouter_max_output_tokens(kind: str) -> int:
 
 def openrouter_site_url() -> str:
     return get("OPENROUTER_SITE_URL")
+
+
+def openrouter_fallback_prices(model: str) -> dict[str, str] | None:
+    """Return validated rates for one exact model slug, or fail closed later."""
+    raw = get("OPENROUTER_FALLBACK_PRICES")
+    try:
+        parsed = json.loads(_clean_openrouter_fallback_prices(raw))
+    except ValueError:
+        # Read-side totality mirrors numeric settings: corrupt stored/env text
+        # falls back to the safe registry default, never to disabled pricing.
+        parsed = json.loads(DEFAULT_OPENROUTER_FALLBACK_PRICES)
+    rates = parsed.get(model)
+    return rates if isinstance(rates, dict) else None
 
 
 def model_for(kind: str) -> str:
