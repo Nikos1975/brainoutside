@@ -14,10 +14,10 @@ from openai import AsyncOpenAI
 from pydantic_ai import (
     Agent,
     ModelRetry,
-    NativeOutput,
     RunContext,
     StructuredDict,
     Tool,
+    ToolOutput,
     UsageLimits,
 )
 from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta
@@ -199,7 +199,15 @@ class OpenRouterAgent:
             name="agent_result",
             description="Return the result using this exact schema.",
         )
-        return NativeOutput(output, strict=True)
+        # Tool output is the portable structured-output path: it works with
+        # tool-capable models even when their endpoint does not advertise the
+        # provider-native `response_format=json_schema` parameter. PydanticAI
+        # still validates the returned arguments against this exact schema.
+        return ToolOutput(
+            output,
+            name="agent_result",
+            description="Return the result using this exact schema.",
+        )
 
     def _agent(self, output_schema: dict | None = None) -> Agent:
         return Agent(
