@@ -15,12 +15,16 @@ import time
 from decimal import Decimal
 
 from asgiref.sync import sync_to_async
+from django.db import connection, transaction
+from django.db.models import Case, DecimalField, Sum, Value, When
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from tiered_openrouter import (
     AgentConfig,
     AgentResult,
     OpenRouterAgent,
     ScopedMarkdownWorkspace,
+    TokenPrices,
     WorkspaceError,
     WorkspaceLimits,
     cheapest_provider_policy,
@@ -83,9 +87,11 @@ def _agent_config(
     append_system: str,
 ) -> AgentConfig:
     max_turns = config.max_turns(kind)
+    model = config.openrouter_model_for(kind, tier)
+    fallback = config.openrouter_fallback_prices(model)
     return AgentConfig(
         api_key=api_key,
-        model=config.openrouter_model_for(kind, tier),
+        model=model,
         instructions=_instructions(append_system),
         provider_policy=_provider_policy(tier),
         app_url=config.openrouter_site_url() or None,
@@ -94,6 +100,7 @@ def _agent_config(
         max_requests=max_turns,
         max_tool_calls=max_turns * 3,
         max_cost_usd=Decimal(str(config.max_budget_usd(kind))),
+        fallback_prices=TokenPrices.from_mapping(fallback) if fallback else None,
         timeout_seconds=config.sdk_timeout_seconds(),
     )
 
@@ -124,6 +131,7 @@ def _map_result(result: AgentResult):
         duration_ms=result.duration_ms,
         num_turns=result.requests,
         cost_usd=result.cost_usd,
+        cost_source=result.cost_source,
         usage={
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
@@ -146,38 +154,80 @@ async def _check_gates(*, exempt_daily_cap: bool, candidate_key: str = "") -> st
     key = candidate_key.strip() or await sync_to_async(config.openrouter_api_key)()
     if not key:
         raise sdk.NotConfigured("OPENROUTER_API_KEY is not configured")
-    if not exempt_daily_cap:
-        cap = await sync_to_async(config.daily_cost_cap)()
-        if cap is not None:
-            spent = await sync_to_async(sdk.today_cost_usd)()
-            if spent >= float(cap):
-                raise sdk.DailyCapExceeded(
-                    f"daily cost cap {cap} USD reached — raise DAILY_COST_CAP, "
-                    "set it to 0 to disable the breaker, or wait for tomorrow"
-                )
     return key
 
 
-async def _create_operation(kind: str, prompt_hash_input: str, subject=None):
+async def _create_operation(
+    kind: str,
+    prompt_hash_input: str,
+    subject=None,
+    *,
+    reserve_cost: Decimal = Decimal(0),
+    enforce_daily_cap: bool = False,
+):
     def create():
-        extra = {}
-        if subject is not None:
-            from django.contrib.contenttypes.models import ContentType
+        with transaction.atomic():
+            # Serialize the check-and-reserve section across all PostgreSQL
+            # worker processes. SQLite is used only by tests/local dev, where
+            # the transaction still preserves the same single-process logic.
+            if connection.vendor == "postgresql":
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        ["brainoutside-daily-model-cost"],
+                    )
 
-            extra = {
-                "subject_type": ContentType.objects.get_for_model(subject),
-                "subject_id": str(subject.pk),
-            }
-        return SdkOperation.objects.create(
-            kind=kind,
-            prompt_hash=hashlib.sha256(prompt_hash_input.encode()).hexdigest(),
-            **extra,
-        )
+            if enforce_daily_cap:
+                cap = config.daily_cost_cap()
+                if cap is not None:
+                    start = timezone.localtime().replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    )
+                    accounted = Case(
+                        When(
+                            finished_at__isnull=True,
+                            then=Coalesce(
+                                "reserved_cost_usd", Value(Decimal(0))
+                            ),
+                        ),
+                        default=Coalesce("cost_usd", Value(Decimal(0))),
+                        output_field=DecimalField(
+                            max_digits=10, decimal_places=6
+                        ),
+                    )
+                    committed = (
+                        SdkOperation.objects.filter(created_at__gte=start).aggregate(
+                            total=Sum(accounted)
+                        )["total"]
+                        or Decimal(0)
+                    )
+                    if committed + reserve_cost > cap:
+                        raise _sdk().DailyCapExceeded(
+                            f"daily cost cap {cap} USD cannot reserve "
+                            f"{reserve_cost} USD for this run "
+                            f"({committed} USD already spent or reserved)"
+                        )
+
+            extra = {}
+            if subject is not None:
+                from django.contrib.contenttypes.models import ContentType
+
+                extra = {
+                    "subject_type": ContentType.objects.get_for_model(subject),
+                    "subject_id": str(subject.pk),
+                }
+            return SdkOperation.objects.create(
+                kind=kind,
+                prompt_hash=hashlib.sha256(prompt_hash_input.encode()).hexdigest(),
+                reserved_cost_usd=reserve_cost,
+                **extra,
+            )
 
     return await sync_to_async(create)()
 
 
 async def _finish_operation(op, run) -> None:
+    reservation = Decimal(op.reserved_cost_usd or 0)
     op.finished_at = timezone.now()
     op.ok = run.ok
     # Persistence must not replace the provider failure with a secondary
@@ -186,7 +236,17 @@ async def _finish_operation(op, run) -> None:
     op.model = str(run.model or "")[:64]
     op.duration_ms = run.duration_ms
     op.num_turns = run.num_turns
-    op.cost_usd = run.cost_usd
+    if run.cost_usd is None and reservation > 0:
+        # A timeout/crash may have consumed tokens without returning usage.
+        # Charge the reservation rather than create a breaker blind spot.
+        op.cost_usd = reservation
+        op.cost_source = "reservation"
+    else:
+        op.cost_usd = (
+            Decimal(str(run.cost_usd)) if run.cost_usd is not None else None
+        )
+        op.cost_source = str(run.cost_source or "")[:16]
+    op.reserved_cost_usd = Decimal(0)
     op.input_tokens = run.usage.get("input_tokens")
     op.output_tokens = run.usage.get("output_tokens")
     op.cache_read_tokens = run.usage.get("cache_read_input_tokens")
@@ -205,20 +265,22 @@ async def run_agent_async(
 ):
     sdk = _sdk()
     api_key = await _check_gates(exempt_daily_cap=False)
+    agent_config = await sync_to_async(_agent_config)(
+        api_key, kind, tier, append_system
+    )
     ledger_kind = "assemble_context" if kind == "reader" else "feed_extraction"
     op = await _create_operation(
         ledger_kind,
         f"openrouter-pydantic|{kind}|{tier}|{append_system}|{prompt}",
         subject,
+        reserve_cost=agent_config.max_cost_usd or Decimal(0),
+        enforce_daily_cap=True,
     )
     workspace = None
     run = sdk.RunResult(ok=False, text="", error_class="Unknown")
     started = time.monotonic()
     try:
         workspace = await sync_to_async(_workspace)(tier)
-        agent_config = await sync_to_async(_agent_config)(
-            api_key, kind, tier, append_system
-        )
         result = await OpenRouterAgent(agent_config).run(
             prompt,
             workspace,
@@ -291,10 +353,15 @@ async def stream_agent(
     """Stream the portable agent and write its final BrainOutside ledger row."""
     sdk = _sdk()
     api_key = await _check_gates(exempt_daily_cap=False)
+    agent_config = await sync_to_async(_agent_config)(
+        api_key, kind, tier, append_system
+    )
     op = await _create_operation(
         "chat" if kind == "reader" else "feed_extraction",
         f"openrouter-pydantic|{kind}|{tier}|{append_system}|{prompt}",
         subject,
+        reserve_cost=agent_config.max_cost_usd or Decimal(0),
+        enforce_daily_cap=True,
     )
     workspace = None
     run = sdk.RunResult(ok=False, text="", error_class="Unknown")
@@ -303,9 +370,6 @@ async def stream_agent(
     client_gone = False
     try:
         workspace = await sync_to_async(_workspace)(tier)
-        agent_config = await sync_to_async(_agent_config)(
-            api_key, kind, tier, append_system
-        )
         async for event_kind, value in OpenRouterAgent(agent_config).stream(
             prompt, workspace
         ):
