@@ -211,10 +211,11 @@ async def run_agent_async(
         f"openrouter-pydantic|{kind}|{tier}|{append_system}|{prompt}",
         subject,
     )
-    workspace = await sync_to_async(_workspace)(tier)
+    workspace = None
     run = sdk.RunResult(ok=False, text="", error_class="Unknown")
     started = time.monotonic()
     try:
+        workspace = await sync_to_async(_workspace)(tier)
         agent_config = await sync_to_async(_agent_config)(
             api_key, kind, tier, append_system
         )
@@ -229,7 +230,7 @@ async def run_agent_async(
             ok=False,
             text="",
             error_class="Timeout",
-            read_paths=workspace.source_paths.copy(),
+            read_paths=workspace.source_paths.copy() if workspace else [],
         )
     except Exception as exc:
         log.exception("openrouter portable runner: %s run failed", kind)
@@ -237,7 +238,7 @@ async def run_agent_async(
             ok=False,
             text="",
             error_class=_error_label(exc),
-            read_paths=workspace.source_paths.copy(),
+            read_paths=workspace.source_paths.copy() if workspace else [],
         )
     finally:
         if run.duration_ms is None:
@@ -295,12 +296,13 @@ async def stream_agent(
         f"openrouter-pydantic|{kind}|{tier}|{append_system}|{prompt}",
         subject,
     )
-    workspace = await sync_to_async(_workspace)(tier)
+    workspace = None
     run = sdk.RunResult(ok=False, text="", error_class="Unknown")
     started = time.monotonic()
     chunks: list[str] = []
     client_gone = False
     try:
+        workspace = await sync_to_async(_workspace)(tier)
         agent_config = await sync_to_async(_agent_config)(
             api_key, kind, tier, append_system
         )
@@ -317,7 +319,7 @@ async def stream_agent(
                 ok=False,
                 text="".join(chunks),
                 error_class="NoResultMessage",
-                read_paths=workspace.source_paths.copy(),
+                read_paths=workspace.source_paths.copy() if workspace else [],
             )
     except GeneratorExit:
         client_gone = True
@@ -325,7 +327,7 @@ async def stream_agent(
             ok=False,
             text="".join(chunks),
             error_class="ClientDisconnected",
-            read_paths=workspace.source_paths.copy(),
+            read_paths=workspace.source_paths.copy() if workspace else [],
         )
         raise
     except (asyncio.TimeoutError, TimeoutError):
@@ -333,7 +335,7 @@ async def stream_agent(
             ok=False,
             text="".join(chunks),
             error_class="Timeout",
-            read_paths=workspace.source_paths.copy(),
+            read_paths=workspace.source_paths.copy() if workspace else [],
         )
     except Exception as exc:
         log.exception("openrouter portable runner: streaming %s run failed", kind)
@@ -341,7 +343,7 @@ async def stream_agent(
             ok=False,
             text="".join(chunks),
             error_class=_error_label(exc),
-            read_paths=workspace.source_paths.copy(),
+            read_paths=workspace.source_paths.copy() if workspace else [],
         )
     finally:
         if run.duration_ms is None:
