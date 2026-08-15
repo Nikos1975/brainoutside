@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 import pytest
-from pydantic_ai import NativeOutput
+from pydantic_ai import ToolOutput
 from tiered_openrouter import AgentConfig, OpenRouterAgent, cheapest_provider_policy
 from tiered_openrouter.agent import _provider
 
@@ -33,7 +33,7 @@ def test_config_rejects_unbounded_or_missing_values():
         )
 
 
-def test_json_schema_uses_strict_native_output():
+def test_json_schema_uses_portable_tool_output():
     output = OpenRouterAgent._output_type(
         {
             "type": "object",
@@ -43,8 +43,8 @@ def test_json_schema_uses_strict_native_output():
         }
     )
 
-    assert isinstance(output, NativeOutput)
-    assert output.strict is True
+    assert isinstance(output, ToolOutput)
+    assert output.name == "agent_result"
 
 
 def test_tools_are_sequential_without_unsupported_provider_parameter(monkeypatch):
