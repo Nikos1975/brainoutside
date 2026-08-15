@@ -16,7 +16,8 @@ from tiered_openrouter import (
     WorkspaceLimits,
 )
 
-from apps.reader.services import openrouter_runner
+from apps.events.models import SdkOperation
+from apps.reader.services import openrouter_runner, sdk_runner
 
 
 def _access(root, limit=10_000):
@@ -101,6 +102,11 @@ def test_missing_snapshot_returns_a_ledgered_failure(monkeypatch):
         )
 
     monkeypatch.setattr(openrouter_runner, "_check_gates", check_gates)
+    monkeypatch.setattr(
+        openrouter_runner,
+        "_agent_config",
+        lambda *args: SimpleNamespace(max_cost_usd=Decimal("0.50")),
+    )
     monkeypatch.setattr(openrouter_runner, "_create_operation", create_operation)
     monkeypatch.setattr(openrouter_runner, "_finish_operation", finish_operation)
     monkeypatch.setattr(openrouter_runner, "_workspace", missing_workspace)
@@ -224,6 +230,14 @@ def test_usage_limits_keep_cost_turn_tool_and_output_caps(monkeypatch):
     monkeypatch.setattr(openrouter_runner.config, "openrouter_site_url", lambda: "")
     monkeypatch.setattr(openrouter_runner.config, "app_name", lambda: "test")
     monkeypatch.setattr(openrouter_runner.config, "sdk_timeout_seconds", lambda: 120)
+    monkeypatch.setattr(
+        openrouter_runner.config,
+        "openrouter_fallback_prices",
+        lambda model: {
+            "input_per_million": "0.1",
+            "output_per_million": "0.2",
+        },
+    )
 
     agent_config = openrouter_runner._agent_config(
         "test-key", "reader", "agents-only", ""
@@ -233,3 +247,106 @@ def test_usage_limits_keep_cost_turn_tool_and_output_caps(monkeypatch):
     assert agent_config.max_requests == 7
     assert agent_config.max_tool_calls == 21
     assert agent_config.max_output_tokens == 900
+    assert agent_config.fallback_prices.input_per_million == Decimal("0.1")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_daily_cap_counts_existing_spend_and_refuses_oversized_reservation(
+    monkeypatch,
+):
+    SdkOperation.objects.create(
+        kind="chat",
+        prompt_hash="a" * 64,
+        finished_at=openrouter_runner.timezone.now(),
+        ok=True,
+        cost_usd=Decimal("0.80"),
+        cost_source="provider",
+    )
+    monkeypatch.setattr(
+        openrouter_runner.config, "daily_cost_cap", lambda: Decimal("1.00")
+    )
+
+    with pytest.raises(sdk_runner.DailyCapExceeded, match="cannot reserve"):
+        asyncio.run(
+            openrouter_runner._create_operation(
+                "chat",
+                "prompt",
+                reserve_cost=Decimal("0.25"),
+                enforce_daily_cap=True,
+            )
+        )
+
+    assert SdkOperation.objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_running_reservations_are_part_of_the_daily_cap(monkeypatch):
+    monkeypatch.setattr(
+        openrouter_runner.config, "daily_cost_cap", lambda: Decimal("1.00")
+    )
+    first = asyncio.run(
+        openrouter_runner._create_operation(
+            "chat",
+            "first",
+            reserve_cost=Decimal("0.60"),
+            enforce_daily_cap=True,
+        )
+    )
+
+    with pytest.raises(sdk_runner.DailyCapExceeded):
+        asyncio.run(
+            openrouter_runner._create_operation(
+                "chat",
+                "second",
+                reserve_cost=Decimal("0.50"),
+                enforce_daily_cap=True,
+            )
+        )
+
+    first.refresh_from_db()
+    assert first.finished_at is None
+    assert first.reserved_cost_usd == Decimal("0.600000")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_final_cost_replaces_reservation_and_records_source():
+    op = asyncio.run(
+        openrouter_runner._create_operation(
+            "feed_extraction",
+            "prompt",
+            reserve_cost=Decimal("1.00"),
+        )
+    )
+    run = sdk_runner.RunResult(
+        ok=True,
+        text="done",
+        cost_usd=0.0025,
+        cost_source="fallback",
+        usage={"input_tokens": 100, "output_tokens": 20},
+    )
+
+    asyncio.run(openrouter_runner._finish_operation(op, run))
+
+    op.refresh_from_db()
+    assert op.reserved_cost_usd == Decimal("0.000000")
+    assert op.cost_usd == Decimal("0.002500")
+    assert op.cost_source == "fallback"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_unpriced_failure_consumes_reservation_fail_closed():
+    op = asyncio.run(
+        openrouter_runner._create_operation(
+            "chat",
+            "prompt",
+            reserve_cost=Decimal("0.50"),
+        )
+    )
+    run = sdk_runner.RunResult(ok=False, text="", error_class="Timeout")
+
+    asyncio.run(openrouter_runner._finish_operation(op, run))
+
+    op.refresh_from_db()
+    assert op.reserved_cost_usd == Decimal("0.000000")
+    assert op.cost_usd == Decimal("0.500000")
+    assert op.cost_source == "reservation"
