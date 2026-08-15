@@ -157,8 +157,8 @@ REGISTRY: tuple[SettingSpec, ...] = (
     SettingSpec(
         "OPENROUTER_CONTEXT_MAX_CHARS",
         "OpenRouter context ceiling",
-        "Maximum serialized tier-snapshot characters per request. The run "
-        "fails rather than silently truncating knowledge.",
+        "Maximum cumulative characters returned by snapshot tools in one "
+        "agent run. The run fails rather than silently truncating knowledge.",
         default="600000",
         clean=_clean_positive_int,
     ),
