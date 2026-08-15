@@ -27,6 +27,7 @@ import concurrent.futures
 import hashlib
 import logging
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Awaitable
 
@@ -75,6 +76,7 @@ class RunResult:
     duration_ms: int | None = None
     num_turns: int | None = None
     cost_usd: float | None = None
+    cost_source: str = ""
     usage: dict = field(default_factory=dict)
     error_class: str = ""
     operation_id: int | None = None
@@ -86,13 +88,21 @@ class RunResult:
 
 
 def today_cost_usd() -> float:
-    """Sum of CLI cost estimates for today's operations (display-only
-    numbers, but good enough for a circuit breaker — grill C23)."""
-    from django.db.models import Sum
+    """Sum finalized costs plus reservations held by running operations."""
+    from django.db.models import Case, DecimalField, Sum, Value, When
+    from django.db.models.functions import Coalesce
 
     start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    accounted = Case(
+        When(
+            finished_at__isnull=True,
+            then=Coalesce("reserved_cost_usd", Value(Decimal(0))),
+        ),
+        default=Coalesce("cost_usd", Value(Decimal(0))),
+        output_field=DecimalField(max_digits=10, decimal_places=6),
+    )
     total = SdkOperation.objects.filter(created_at__gte=start).aggregate(
-        s=Sum("cost_usd")
+        s=Sum(accounted)
     )["s"]
     return float(total or 0)
 
