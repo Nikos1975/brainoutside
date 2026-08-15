@@ -90,6 +90,13 @@ def _clean_positive_int(raw: str) -> str:
     return str(value)
 
 
+def _clean_ai_provider(raw: str) -> str:
+    value = raw.strip().lower()
+    if value not in {"claude", "openrouter"}:
+        raise ValueError("must be either claude or openrouter")
+    return value
+
+
 REGISTRY: tuple[SettingSpec, ...] = (
     SettingSpec(
         "APP_NAME",
@@ -112,6 +119,69 @@ REGISTRY: tuple[SettingSpec, ...] = (
         "limit per PLAN.md §9) or a Claude subscription token from "
         "`claude setup-token` (sk-ant-oat…) — detected automatically.",
         secret=True,
+    ),
+    SettingSpec(
+        "AI_PROVIDER",
+        "AI provider",
+        "Runtime used for reader, chat and feed extraction. Use openrouter "
+        "for the native multi-model path; claude keeps the pinned Agent SDK.",
+        default="claude",
+        clean=_clean_ai_provider,
+    ),
+    SettingSpec(
+        "OPENROUTER_API_KEY",
+        "OpenRouter API key",
+        "Secret used only by the native OpenRouter runner.",
+        secret=True,
+    ),
+    SettingSpec(
+        "OPENROUTER_MODEL_READER",
+        "OpenRouter reader model",
+        "Model for agents-only/private reading and chat.",
+        default="deepseek/deepseek-v4-flash-0731",
+    ),
+    SettingSpec(
+        "OPENROUTER_MODEL_FEEDER",
+        "OpenRouter feeder model",
+        "Model for feed extraction.",
+        default="deepseek/deepseek-v4-flash-0731",
+    ),
+    SettingSpec(
+        "OPENROUTER_MODEL_PUBLIC",
+        "OpenRouter public model",
+        "Optional public-tier reader model. The default free Laguna endpoint "
+        "may use inputs and outputs for training, so it is never selected "
+        "for agents-only or private requests.",
+        default="poolside/laguna-s-2.1:free",
+    ),
+    SettingSpec(
+        "OPENROUTER_CONTEXT_MAX_CHARS",
+        "OpenRouter context ceiling",
+        "Maximum serialized tier-snapshot characters per request. The run "
+        "fails rather than silently truncating knowledge.",
+        default="600000",
+        clean=_clean_positive_int,
+    ),
+    SettingSpec(
+        "OPENROUTER_MAX_OUTPUT_TOKENS_READER",
+        "OpenRouter reader output tokens",
+        "Maximum generated tokens for reader and chat requests.",
+        default="4096",
+        clean=_clean_positive_int,
+    ),
+    SettingSpec(
+        "OPENROUTER_MAX_OUTPUT_TOKENS_FEEDER",
+        "OpenRouter feeder output tokens",
+        "Maximum generated tokens for extraction proposals.",
+        default="16384",
+        clean=_clean_positive_int,
+    ),
+    SettingSpec(
+        "OPENROUTER_SITE_URL",
+        "OpenRouter site URL",
+        "Optional HTTP-Referer attribution header, for example the public "
+        "BrainOutside URL.",
+        default="",
     ),
     SettingSpec(
         "CLAUDE_MODEL_READER",
@@ -280,6 +350,41 @@ def app_name() -> str:
 
 def anthropic_api_key() -> str:
     return get("ANTHROPIC_API_KEY")
+
+
+def ai_provider() -> str:
+    value = get("AI_PROVIDER").lower()
+    return value if value in {"claude", "openrouter"} else "claude"
+
+
+def openrouter_api_key() -> str:
+    return get("OPENROUTER_API_KEY")
+
+
+def openrouter_model_for(kind: str, tier: str) -> str:
+    checked_kind = _kind(kind)
+    if checked_kind == "READER" and tier == "public":
+        return get("OPENROUTER_MODEL_PUBLIC")
+    return get(f"OPENROUTER_MODEL_{checked_kind}")
+
+
+def openrouter_context_max_chars() -> int:
+    try:
+        return max(10000, int(get("OPENROUTER_CONTEXT_MAX_CHARS")))
+    except ValueError:
+        return 600000
+
+
+def openrouter_max_output_tokens(kind: str) -> int:
+    fallback = 4096 if _kind(kind) == "READER" else 16384
+    try:
+        return max(1, int(get(f"OPENROUTER_MAX_OUTPUT_TOKENS_{_kind(kind)}")))
+    except ValueError:
+        return fallback
+
+
+def openrouter_site_url() -> str:
+    return get("OPENROUTER_SITE_URL")
 
 
 def model_for(kind: str) -> str:
