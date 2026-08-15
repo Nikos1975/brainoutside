@@ -495,14 +495,6 @@ async def _run_ledgered(
 async def test_connection_async(
     *, exempt_daily_cap: bool = True, candidate_key: str = ""
 ) -> RunResult:
-    if await sync_to_async(config.ai_provider)() == "openrouter":
-        from apps.reader.services import openrouter_runner
-
-        return await openrouter_runner.test_connection_async(
-            exempt_daily_cap=exempt_daily_cap,
-            candidate_key=candidate_key,
-        )
-
     """Minimal SDK ping for the Settings page 'Test connection' button.
 
     No tools, one turn, public-tier cwd — proves the whole chain works:
@@ -515,6 +507,14 @@ async def test_connection_async(
     before anything persists it. Without it the probe reads the stored
     key — the Settings-page behaviour.
     """
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        return await openrouter_runner.test_connection_async(
+            exempt_daily_cap=exempt_daily_cap,
+            candidate_key=candidate_key,
+        )
+
     from claude_agent_sdk import ClaudeAgentOptions
 
     from apps.brain.services import snapshots
@@ -589,6 +589,14 @@ async def stream_agent(
     append_system: str,
     subject=None,
 ):
+    """Tier-locked STREAMING run (M3.1/M3.3): an async generator that
+    yields `("delta", text)` as tokens arrive and finally `("result",
+    RunResult)` exactly once. Same gates, lockdown, and row-before-run
+    ledger as `run_agent_async`; the wall-clock timeout bounds the WAIT
+    for each event, not just the gap between events, and the stream is
+    closed explicitly so the SDK reaps its subprocess.
+    Observed `Read` tool calls land in RunResult.read_paths — the honest
+    source list, not agent self-report."""
     if await sync_to_async(config.ai_provider)() == "openrouter":
         from apps.reader.services import openrouter_runner
 
@@ -602,14 +610,6 @@ async def stream_agent(
             yield event
         return
 
-    """Tier-locked STREAMING run (M3.1/M3.3): an async generator that
-    yields `("delta", text)` as tokens arrive and finally `("result",
-    RunResult)` exactly once. Same gates, lockdown, and row-before-run
-    ledger as `run_agent_async`; the wall-clock timeout bounds the WAIT
-    for each event, not just the gap between events, and the stream is
-    closed explicitly so the SDK reaps its subprocess.
-    Observed `Read` tool calls land in RunResult.read_paths — the honest
-    source list, not agent self-report."""
     import time as _time
 
     from claude_agent_sdk import (
@@ -760,6 +760,14 @@ async def run_agent_async(
     output_format: dict | None = None,
     subject=None,
 ) -> RunResult:
+    """Generic tier-locked agent run — the M2/M3 entry point.
+
+    `kind` is an SDK kind from brainconfig ("reader"/"feeder"); the ledger
+    row records the operational kind derived from it. `output_format`
+    (Messages-API json_schema shape) makes the run return
+    `RunResult.structured_output` (grill C9); `subject` links the ledger
+    row to what triggered the run.
+    """
     if await sync_to_async(config.ai_provider)() == "openrouter":
         from apps.reader.services import openrouter_runner
 
@@ -772,14 +780,6 @@ async def run_agent_async(
             subject=subject,
         )
 
-    """Generic tier-locked agent run — the M2/M3 entry point.
-
-    `kind` is an SDK kind from brainconfig ("reader"/"feeder"); the ledger
-    row records the operational kind derived from it. `output_format`
-    (Messages-API json_schema shape) makes the run return
-    `RunResult.structured_output` (grill C9); `subject` links the ledger
-    row to what triggered the run.
-    """
     api_key = await sync_to_async(_check_gates)(exempt_daily_cap=False)
     options = await sync_to_async(_snapshot_options)(
         tier, api_key, kind, append_system, output_format, partial_messages=True
