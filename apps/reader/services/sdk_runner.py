@@ -495,6 +495,14 @@ async def _run_ledgered(
 async def test_connection_async(
     *, exempt_daily_cap: bool = True, candidate_key: str = ""
 ) -> RunResult:
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        return await openrouter_runner.test_connection_async(
+            exempt_daily_cap=exempt_daily_cap,
+            candidate_key=candidate_key,
+        )
+
     """Minimal SDK ping for the Settings page 'Test connection' button.
 
     No tools, one turn, public-tier cwd — proves the whole chain works:
@@ -581,6 +589,19 @@ async def stream_agent(
     append_system: str,
     subject=None,
 ):
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        async for event in openrouter_runner.stream_agent(
+            kind=kind,
+            tier=tier,
+            prompt=prompt,
+            append_system=append_system,
+            subject=subject,
+        ):
+            yield event
+        return
+
     """Tier-locked STREAMING run (M3.1/M3.3): an async generator that
     yields `("delta", text)` as tokens arrive and finally `("result",
     RunResult)` exactly once. Same gates, lockdown, and row-before-run
@@ -739,6 +760,18 @@ async def run_agent_async(
     output_format: dict | None = None,
     subject=None,
 ) -> RunResult:
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        return await openrouter_runner.run_agent_async(
+            kind=kind,
+            tier=tier,
+            prompt=prompt,
+            append_system=append_system,
+            output_format=output_format,
+            subject=subject,
+        )
+
     """Generic tier-locked agent run — the M2/M3 entry point.
 
     `kind` is an SDK kind from brainconfig ("reader"/"feeder"); the ledger
