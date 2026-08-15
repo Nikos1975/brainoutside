@@ -47,6 +47,31 @@ def test_json_schema_uses_strict_native_output():
     assert output.strict is True
 
 
+def test_tools_are_sequential_without_unsupported_provider_parameter(monkeypatch):
+    for name in (
+        "ALL_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "all_proxy",
+        "https_proxy",
+        "http_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    runner = OpenRouterAgent(
+        AgentConfig(
+            api_key="key",
+            model="poolside/laguna-s-2.1:free",
+            instructions="",
+            provider_policy={},
+        )
+    )
+
+    assert "parallel_tool_calls" not in runner.model.settings
+    tools = runner._agent()._function_toolset.tools
+    assert tools
+    assert all(tool.sequential for tool in tools.values())
+
+
 def test_compatible_proxy_is_configuration_not_a_dependency(monkeypatch):
     for name in (
         "ALL_PROXY",
