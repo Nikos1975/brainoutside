@@ -1,8 +1,15 @@
 from decimal import Decimal
 
 import pytest
-from pydantic_ai import ToolOutput
-from tiered_openrouter import AgentConfig, OpenRouterAgent, cheapest_provider_policy
+from pydantic_ai import ToolOutput, UsageLimitExceeded
+from pydantic_ai.usage import RunUsage
+from tiered_openrouter import (
+    AgentConfig,
+    FallbackPricedUsageLimits,
+    OpenRouterAgent,
+    TokenPrices,
+    cheapest_provider_policy,
+)
 from tiered_openrouter.agent import _provider
 
 
@@ -31,6 +38,72 @@ def test_config_rejects_unbounded_or_missing_values():
             provider_policy={},
             max_cost_usd=Decimal(0),
         )
+
+
+def test_fallback_pricing_does_not_double_count_cache_tokens():
+    prices = TokenPrices(
+        input_per_million=Decimal(2),
+        output_per_million=Decimal(10),
+        cache_read_per_million=Decimal("0.5"),
+        cache_write_per_million=Decimal(3),
+    )
+    usage = RunUsage(
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+        cache_read_tokens=200_000,
+        cache_write_tokens=100_000,
+    )
+
+    # 700k ordinary input + 200k cache read + 100k cache write + 100k output.
+    assert prices.cost(usage) == Decimal("2.8")
+
+
+def test_fallback_prices_default_cache_buckets_to_input_rate():
+    prices = TokenPrices(
+        input_per_million=Decimal(1),
+        output_per_million=Decimal(2),
+    )
+    usage = RunUsage(
+        input_tokens=1_000,
+        output_tokens=100,
+        cache_read_tokens=800,
+    )
+
+    assert prices.cost(usage) == Decimal("0.0012")
+
+
+def test_fallback_cost_is_enforced_without_native_price():
+    limits = FallbackPricedUsageLimits(
+        cost_limit=Decimal("0.001"),
+        fallback_prices=TokenPrices(
+            input_per_million=Decimal(1),
+            output_per_million=Decimal(2),
+        ),
+    )
+
+    with pytest.raises(UsageLimitExceeded, match="source=fallback"):
+        limits.check_cost(RunUsage(input_tokens=1_000, output_tokens=1))
+
+
+def test_missing_native_and_fallback_prices_fails_closed():
+    limits = FallbackPricedUsageLimits(cost_limit=Decimal(1))
+
+    with pytest.raises(UsageLimitExceeded, match="no fallback token prices"):
+        limits.check_cost(RunUsage(input_tokens=1))
+
+
+def test_native_cost_takes_precedence_over_fallback_estimate():
+    limits = FallbackPricedUsageLimits(
+        cost_limit=Decimal(1),
+        fallback_prices=TokenPrices(
+            input_per_million=Decimal(999),
+            output_per_million=Decimal(999),
+        ),
+    )
+    usage = RunUsage(input_tokens=1_000_000, cost=Decimal("0.25"))
+
+    assert limits.effective_cost(usage) == (Decimal("0.25"), "provider")
+    limits.check_cost(usage)
 
 
 def test_json_schema_uses_portable_tool_output():
