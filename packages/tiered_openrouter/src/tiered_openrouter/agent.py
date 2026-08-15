@@ -17,6 +17,7 @@ from pydantic_ai import (
     NativeOutput,
     RunContext,
     StructuredDict,
+    Tool,
     UsageLimits,
 )
 from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta
@@ -170,7 +171,6 @@ class OpenRouterAgent:
         provider = _provider(config)
         settings = OpenRouterModelSettings(
             max_tokens=config.max_output_tokens,
-            parallel_tool_calls=False,
             openrouter_provider=config.provider_policy,
             openrouter_usage={"include": True},
         )
@@ -207,7 +207,16 @@ class OpenRouterAgent:
             deps_type=ScopedMarkdownWorkspace,
             instructions=self.config.instructions,
             output_type=self._output_type(output_schema),
-            tools=[list_workspace_files, search_workspace, read_workspace_file],
+            # Keep execution ordered locally without sending the optional
+            # `parallel_tool_calls` provider parameter. Some otherwise
+            # tool-capable endpoints (including Laguna S 2.1) do not
+            # advertise that parameter and reject it when
+            # `require_parameters` is enabled.
+            tools=[
+                Tool(list_workspace_files, sequential=True),
+                Tool(search_workspace, sequential=True),
+                Tool(read_workspace_file, sequential=True),
+            ],
             retries={
                 "tools": self.config.tool_retries,
                 "output": self.config.output_retries,
