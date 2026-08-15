@@ -50,7 +50,7 @@ def _provider_policy(tier: str, *, structured: bool) -> dict:
     return {
         "sort": "price",
         "allow_fallbacks": True,
-        "require_parameters": structured,
+        "require_parameters": True,
         # Laguna's free endpoint may use inputs/outputs for training, so it
         # is restricted to public-tier requests by model_for().
         "data_collection": "allow" if tier == "public" else "deny",
