@@ -47,3 +47,33 @@ def test_feeder_never_uses_public_model(monkeypatch):
         config.openrouter_model_for("feeder", "agents-only")
         == "deepseek/deepseek-v4-flash-0731"
     )
+
+
+def test_fallback_price_map_is_exact_model_scoped(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "get",
+        lambda key: (
+            '{"model/a":{"input_per_million":"1",'
+            '"output_per_million":"2"}}'
+        ),
+    )
+
+    assert config.openrouter_fallback_prices("model/a") == {
+        "input_per_million": "1",
+        "output_per_million": "2",
+    }
+    assert config.openrouter_fallback_prices("model/b") is None
+
+
+def test_fallback_price_map_rejects_negative_and_unknown_rates():
+    with pytest.raises(ValueError, match="non-negative"):
+        config._clean_openrouter_fallback_prices(
+            '{"model/a":{"input_per_million":"-1",'
+            '"output_per_million":"2"}}'
+        )
+    with pytest.raises(ValueError, match="unknown keys"):
+        config._clean_openrouter_fallback_prices(
+            '{"model/a":{"input_per_million":"1",'
+            '"output_per_million":"2","request":"3"}}'
+        )
