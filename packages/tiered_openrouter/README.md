@@ -30,6 +30,7 @@ subdirectory after the package is published on a stable branch or tag.
         AgentConfig,
         OpenRouterAgent,
         ScopedMarkdownWorkspace,
+        TokenPrices,
         cheapest_provider_policy,
     )
 
@@ -44,6 +45,12 @@ subdirectory after the package is published on a stable branch or tag.
             ),
             provider_policy=cheapest_provider_policy(data_collection="allow"),
             max_cost_usd=Decimal("0.05"),
+            # Used only if native/provider pricing is unavailable. Keep these
+            # conservative and update them whenever the model slug changes.
+            fallback_prices=TokenPrices(
+                input_per_million=Decimal("0"),
+                output_per_million=Decimal("0"),
+            ),
         )
         result = await OpenRouterAgent(config).run(
             "What are the main operating principles?",
@@ -56,6 +63,28 @@ subdirectory after the package is published on a stable branch or tag.
 
 For private content, set data_collection to deny. If all eligible providers
 support it, zero_data_retention can also be enabled.
+
+## Cost enforcement
+
+PydanticAI normally supplies a native best-effort cost. Newly released models
+can be absent from its pricing registry, so `AgentConfig.fallback_prices`
+accepts explicit USD-per-million-token rates. The portable usage limiter checks
+the native cost first, otherwise computes a fallback cost from inclusive input,
+output, cache-read and cache-write token buckets after every model response.
+When a cost limit exists but neither source can price the run, execution fails
+closed after the first response instead of continuing unmetered.
+
+Fallback prices are deliberately host configuration, not a package model-price
+catalogue. Pricing changes independently of application releases, and routed
+providers may differ. Cache prices default conservatively to the ordinary input
+rate when omitted.
+
+The package enforces one run. A host that also has a daily cap should reserve
+the full per-run budget atomically in its durable ledger before starting the
+request, include active reservations in the cap calculation, replace the
+reservation with final provider/fallback cost, and retain the reservation when
+a timeout or crash returns no usage. BrainOutside's Django adapter implements
+that policy with a PostgreSQL transaction-level advisory lock.
 
 ## Optional proxies and compressors
 
