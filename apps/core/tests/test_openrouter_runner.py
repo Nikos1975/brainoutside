@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
-from pydantic_ai import NativeOutput
+from pydantic_ai import ToolOutput
 from tiered_openrouter import (
     ContextLimitExceeded,
     OpenRouterAgent,
@@ -50,7 +52,7 @@ def test_provider_error_label_fits_ledger_column():
     assert len(label) == 128
 
 
-def test_json_schema_becomes_strict_native_output():
+def test_json_schema_becomes_portable_tool_output():
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
@@ -58,8 +60,71 @@ def test_json_schema_becomes_strict_native_output():
         "additionalProperties": False,
     }
     output = OpenRouterAgent._output_type(schema)
-    assert isinstance(output, NativeOutput)
-    assert output.strict is True
+    assert isinstance(output, ToolOutput)
+    assert output.name == "agent_result"
+
+
+def test_missing_snapshot_returns_a_ledgered_failure(monkeypatch):
+    class RunResult:
+        def __init__(
+            self,
+            *,
+            ok,
+            text,
+            error_class,
+            read_paths=None,
+            duration_ms=None,
+        ):
+            self.ok = ok
+            self.text = text
+            self.error_class = error_class
+            self.read_paths = read_paths or []
+            self.duration_ms = duration_ms
+            self.operation_id = None
+            self.usage = {}
+
+    op = SimpleNamespace(id=73)
+    finished = []
+
+    async def check_gates(**kwargs):
+        return "key"
+
+    async def create_operation(*args, **kwargs):
+        return op
+
+    async def finish_operation(operation, run):
+        finished.append((operation, run))
+
+    def missing_workspace(tier):
+        raise openrouter_runner.OpenRouterError(
+            f"{tier} snapshot is not available"
+        )
+
+    monkeypatch.setattr(openrouter_runner, "_check_gates", check_gates)
+    monkeypatch.setattr(openrouter_runner, "_create_operation", create_operation)
+    monkeypatch.setattr(openrouter_runner, "_finish_operation", finish_operation)
+    monkeypatch.setattr(openrouter_runner, "_workspace", missing_workspace)
+    monkeypatch.setattr(
+        openrouter_runner,
+        "_sdk",
+        lambda: SimpleNamespace(RunResult=RunResult),
+    )
+
+    run = asyncio.run(
+        openrouter_runner.run_agent_async(
+            kind="feeder",
+            tier="agents-only",
+            prompt="test",
+            append_system="",
+        )
+    )
+
+    assert run.ok is False
+    assert run.error_class == (
+        "OpenRouterError: agents-only snapshot is not available"
+    )
+    assert run.operation_id == 73
+    assert finished == [(op, run)]
 
 
 def test_snapshot_reads_only_selected_root_and_records_source(tmp_path):
