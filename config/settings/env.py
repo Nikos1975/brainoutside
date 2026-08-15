@@ -177,6 +177,26 @@ class Settings(BaseSettings):
     # ----- Cache / queue -----
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # ----- AI providers -----
+    # Runtime resolution and encrypted-at-rest overrides live in
+    # apps.brainconfig.services. These declarations keep the process env
+    # typed and document the operator-facing surface without changing that
+    # service's DB/env/default precedence.
+    AI_PROVIDER: Literal["claude", "openrouter"] = "claude"
+    ANTHROPIC_API_KEY: SecretStr = SecretStr("")
+    OPENROUTER_API_KEY: SecretStr = SecretStr("")
+    OPENROUTER_MODEL_READER: str = "deepseek/deepseek-v4-flash-0731"
+    OPENROUTER_MODEL_FEEDER: str = "deepseek/deepseek-v4-flash-0731"
+    OPENROUTER_MODEL_PUBLIC: str = "poolside/laguna-s-2.1:free"
+    OPENROUTER_CONTEXT_MAX_CHARS: int = 600_000
+    OPENROUTER_MAX_OUTPUT_TOKENS_READER: int = 4_096
+    OPENROUTER_MAX_OUTPUT_TOKENS_FEEDER: int = 16_384
+    OPENROUTER_SITE_URL: str = ""
+    # JSON model -> USD-per-million token schedule. It is parsed and
+    # validated by brainconfig because that same code also validates values
+    # edited through the ops UI.
+    OPENROUTER_FALLBACK_PRICES: str = ""
+
     # ----- Q2 worker tuning (UPDATES.md #8) -----
     # Cluster-wide defaults for the django-q2 worker, tuned for AI workloads
     # (Replicate / fal.ai / OpenAI / Anthropic image-video-audio generation,
@@ -512,6 +532,6 @@ settings = Settings()  # type: ignore[call-arg]
 # `assert_prod_safe()` — which is the point: a stock deploy passes those
 # checks without a human writing a single secret by hand. Explicit env always
 # wins, so an infrastructure-as-code setup is unaffected.
-from .boot_secrets import apply_generated_secrets  # noqa: E402
+from .boot_secrets import apply_generated_secrets
 
 apply_generated_secrets(settings, base_dir=REPO_ROOT)
