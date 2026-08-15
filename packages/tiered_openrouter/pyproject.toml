@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tiered-openrouter"
+version = "0.1.0"
+description = "Portable PydanticAI/OpenRouter agent with a read-only scoped Markdown workspace"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "openai>=2.0,<3",
+  "pydantic-ai-slim[openrouter]==2.31.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tiered_openrouter"]

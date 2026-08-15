@@ -1,16 +1,27 @@
 """Provider and containment tests for the PydanticAI OpenRouter runner."""
+
 from __future__ import annotations
 
 from decimal import Decimal
 
 import pytest
 from pydantic_ai import NativeOutput
+from tiered_openrouter import (
+    ContextLimitExceeded,
+    OpenRouterAgent,
+    ScopedMarkdownWorkspace,
+    WorkspaceError,
+    WorkspaceLimits,
+)
 
 from apps.reader.services import openrouter_runner
 
 
 def _access(root, limit=10_000):
-    return openrouter_runner.SnapshotAccess(root=root.resolve(), max_total_chars=limit)
+    return ScopedMarkdownWorkspace(
+        root=root.resolve(),
+        limits=WorkspaceLimits(max_total_chars=limit),
+    )
 
 
 def test_private_tiers_deny_provider_data_collection():
@@ -37,9 +48,7 @@ def test_json_schema_becomes_strict_native_output():
         "required": ["answer"],
         "additionalProperties": False,
     }
-    output = openrouter_runner._output_type(
-        {"type": "json_schema", "schema": schema}
-    )
+    output = OpenRouterAgent._output_type(schema)
     assert isinstance(output, NativeOutput)
     assert output.strict is True
 
@@ -58,7 +67,7 @@ def test_snapshot_reads_only_selected_root_and_records_source(tmp_path):
 
     assert "visible" in result
     assert "never include" not in result
-    assert access.read_paths == [str(visible.resolve())]
+    assert access.source_paths == [str(visible.resolve())]
 
 
 def test_search_records_only_files_whose_text_entered_context(tmp_path):
@@ -72,7 +81,7 @@ def test_search_records_only_files_whose_text_entered_context(tmp_path):
     result = access.search("elounda")
 
     assert "matching.md:2" in result
-    assert access.read_paths == [str(matching.resolve())]
+    assert access.source_paths == [str(matching.resolve())]
 
 
 def test_list_does_not_claim_file_contents_as_sources(tmp_path):
@@ -84,7 +93,7 @@ def test_list_does_not_claim_file_contents_as_sources(tmp_path):
 
     assert "INDEX.md" in access.list_files()
     assert "note.md" in access.list_files()
-    assert access.read_paths == []
+    assert access.source_paths == []
 
 
 def test_path_traversal_and_absolute_paths_are_refused(tmp_path):
@@ -93,9 +102,9 @@ def test_path_traversal_and_absolute_paths_are_refused(tmp_path):
     (root / "note.md").write_text("visible", encoding="utf-8")
     access = _access(root)
 
-    with pytest.raises(openrouter_runner.OpenRouterError):
+    with pytest.raises(WorkspaceError):
         access.read_file("../secret.md")
-    with pytest.raises(openrouter_runner.OpenRouterError):
+    with pytest.raises(WorkspaceError):
         access.read_file(str((root / "note.md").resolve()))
 
 
@@ -111,7 +120,7 @@ def test_snapshot_file_symlink_escape_is_refused(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not permitted on this host")
 
-    with pytest.raises(openrouter_runner.OpenRouterError):
+    with pytest.raises(WorkspaceError):
         _access(public).read_file("escape.md")
 
 
@@ -123,22 +132,30 @@ def test_tool_context_ceiling_is_cumulative(tmp_path):
     access = _access(root, limit=100)
 
     access.read_file("a.md")
-    with pytest.raises(openrouter_runner.ContextTooLarge):
+    with pytest.raises(ContextLimitExceeded):
         access.read_file("b.md")
 
 
 def test_usage_limits_keep_cost_turn_tool_and_output_caps(monkeypatch):
     monkeypatch.setattr(openrouter_runner.config, "max_turns", lambda kind: 7)
-    monkeypatch.setattr(
-        openrouter_runner.config, "max_budget_usd", lambda kind: 0.25
-    )
+    monkeypatch.setattr(openrouter_runner.config, "max_budget_usd", lambda kind: 0.25)
     monkeypatch.setattr(
         openrouter_runner.config, "openrouter_max_output_tokens", lambda kind: 900
     )
+    monkeypatch.setattr(
+        openrouter_runner.config,
+        "openrouter_model_for",
+        lambda kind, tier: "deepseek/test-model",
+    )
+    monkeypatch.setattr(openrouter_runner.config, "openrouter_site_url", lambda: "")
+    monkeypatch.setattr(openrouter_runner.config, "app_name", lambda: "test")
+    monkeypatch.setattr(openrouter_runner.config, "sdk_timeout_seconds", lambda: 120)
 
-    limits = openrouter_runner._limits("reader")
+    agent_config = openrouter_runner._agent_config(
+        "test-key", "reader", "agents-only", ""
+    )
 
-    assert limits.cost_limit == Decimal("0.25")
-    assert limits.request_limit == 7
-    assert limits.tool_calls_limit == 21
-    assert limits.output_tokens_limit == 900
+    assert agent_config.max_cost_usd == Decimal("0.25")
+    assert agent_config.max_requests == 7
+    assert agent_config.max_tool_calls == 21
+    assert agent_config.max_output_tokens == 900

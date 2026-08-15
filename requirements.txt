@@ -13,7 +13,7 @@ httpx>=0.27
 # PydanticAI agent loop for OpenRouter — exact pin: provider settings,
 # streaming event types and usage-limit behavior are part of our runtime
 # contract and must be upgraded deliberately.
-pydantic-ai-slim[openrouter]==2.31.0
+./packages/tiered_openrouter
 redis>=5.0
 # config/cache.py selects django_redis.cache.RedisCache whenever the
 # boot-time PING succeeds — without this package that path raises
