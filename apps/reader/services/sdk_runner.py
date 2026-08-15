@@ -1,4 +1,4 @@
-"""SdkRunner — the single gate every Claude Agent SDK call goes through.
+"""SdkRunner — the single gate every model-backed agent call goes through.
 
 Responsibilities (PLAN.md §7):
 - **Lockdown**: deny-by-default tool policy scoped to one tier snapshot.
@@ -7,14 +7,16 @@ Responsibilities (PLAN.md §7):
   constrain an absolute `path` argument, and an `allowed_tools` entry
   with no `(...)` specifier allows the whole tool outright. Everything
   else (Bash, Write, Edit, WebFetch, WebSearch, Task…) is disallowed BY
-  NAME so the tools leave context entirely. `setting_sources=[]` +
+  NAME so the tools leave context entirely. The PydanticAI/OpenRouter
+  path exposes equivalent read-only application tools instead of a raw
+  filesystem. `setting_sources=[]` +
   `strict_mcp_config=True` mean nothing auto-loads from ~/.claude or any
   repo .claude/ (grill C4, C12a).
 - **Ledger**: an SdkOperation row is written BEFORE the run (`ok=None`)
   and finalized after, so killed runs are never invisible (grill C6).
-- **Budgets**: per-kind `max_budget_usd` (soft, SDK-enforced between
-  turns) + `max_turns` + wall-clock timeout with subprocess kill as the
-  hard stop, plus the daily circuit breaker (grill C5/C16).
+- **Budgets**: per-kind `max_budget_usd` + `max_turns` + wall-clock
+  timeout, plus the daily circuit breaker (grill C5/C16). Claude SDK
+  reaps its subprocess; PydanticAI cancels its direct HTTP agent run.
 - **Degraded mode**: SDK/API failures map to `ok=False` + `error_class`;
   callers fail fast, never auto-retry chat/assemble (grill C21).
 """
