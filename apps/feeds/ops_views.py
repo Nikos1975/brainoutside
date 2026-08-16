@@ -196,6 +196,12 @@ def _handle_action(request, feed: Feed) -> None:
             messages.error(request, f"Edits saved — {len(res.violations)} validation violation(s) remain.")
 
     elif action == "reject":
+        if feed.extraction_in_flight:
+            messages.info(
+                request,
+                "Extraction is still running — wait for it to finish before rejecting.",
+            )
+            return
         reason = (request.POST.get("reason") or "").strip()
         if not reason:
             messages.error(request, "A reject reason is required.")

@@ -1,4 +1,4 @@
-"""SdkRunner — the single gate every Claude Agent SDK call goes through.
+"""SdkRunner — the single gate every model-backed agent call goes through.
 
 Responsibilities (PLAN.md §7):
 - **Lockdown**: deny-by-default tool policy scoped to one tier snapshot.
@@ -7,14 +7,16 @@ Responsibilities (PLAN.md §7):
   constrain an absolute `path` argument, and an `allowed_tools` entry
   with no `(...)` specifier allows the whole tool outright. Everything
   else (Bash, Write, Edit, WebFetch, WebSearch, Task…) is disallowed BY
-  NAME so the tools leave context entirely. `setting_sources=[]` +
+  NAME so the tools leave context entirely. The PydanticAI/OpenRouter
+  path exposes equivalent read-only application tools instead of a raw
+  filesystem. `setting_sources=[]` +
   `strict_mcp_config=True` mean nothing auto-loads from ~/.claude or any
   repo .claude/ (grill C4, C12a).
 - **Ledger**: an SdkOperation row is written BEFORE the run (`ok=None`)
   and finalized after, so killed runs are never invisible (grill C6).
-- **Budgets**: per-kind `max_budget_usd` (soft, SDK-enforced between
-  turns) + `max_turns` + wall-clock timeout with subprocess kill as the
-  hard stop, plus the daily circuit breaker (grill C5/C16).
+- **Budgets**: per-kind `max_budget_usd` + `max_turns` + wall-clock
+  timeout, plus the daily circuit breaker (grill C5/C16). Claude SDK
+  reaps its subprocess; PydanticAI cancels its direct HTTP agent run.
 - **Degraded mode**: SDK/API failures map to `ok=False` + `error_class`;
   callers fail fast, never auto-retry chat/assemble (grill C21).
 """
@@ -25,6 +27,7 @@ import concurrent.futures
 import hashlib
 import logging
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Awaitable
 
@@ -73,6 +76,7 @@ class RunResult:
     duration_ms: int | None = None
     num_turns: int | None = None
     cost_usd: float | None = None
+    cost_source: str = ""
     usage: dict = field(default_factory=dict)
     error_class: str = ""
     operation_id: int | None = None
@@ -84,13 +88,21 @@ class RunResult:
 
 
 def today_cost_usd() -> float:
-    """Sum of CLI cost estimates for today's operations (display-only
-    numbers, but good enough for a circuit breaker — grill C23)."""
-    from django.db.models import Sum
+    """Sum finalized costs plus reservations held by running operations."""
+    from django.db.models import Case, DecimalField, Sum, Value, When
+    from django.db.models.functions import Coalesce
 
     start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    accounted = Case(
+        When(
+            finished_at__isnull=True,
+            then=Coalesce("reserved_cost_usd", Value(Decimal(0))),
+        ),
+        default=Coalesce("cost_usd", Value(Decimal(0))),
+        output_field=DecimalField(max_digits=10, decimal_places=6),
+    )
     total = SdkOperation.objects.filter(created_at__gte=start).aggregate(
-        s=Sum("cost_usd")
+        s=Sum(accounted)
     )["s"]
     return float(total or 0)
 
@@ -507,6 +519,14 @@ async def test_connection_async(
     before anything persists it. Without it the probe reads the stored
     key — the Settings-page behaviour.
     """
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        return await openrouter_runner.test_connection_async(
+            exempt_daily_cap=exempt_daily_cap,
+            candidate_key=candidate_key,
+        )
+
     from claude_agent_sdk import ClaudeAgentOptions
 
     from apps.brain.services import snapshots
@@ -589,6 +609,19 @@ async def stream_agent(
     closed explicitly so the SDK reaps its subprocess.
     Observed `Read` tool calls land in RunResult.read_paths — the honest
     source list, not agent self-report."""
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        async for event in openrouter_runner.stream_agent(
+            kind=kind,
+            tier=tier,
+            prompt=prompt,
+            append_system=append_system,
+            subject=subject,
+        ):
+            yield event
+        return
+
     import time as _time
 
     from claude_agent_sdk import (
@@ -747,6 +780,18 @@ async def run_agent_async(
     `RunResult.structured_output` (grill C9); `subject` links the ledger
     row to what triggered the run.
     """
+    if await sync_to_async(config.ai_provider)() == "openrouter":
+        from apps.reader.services import openrouter_runner
+
+        return await openrouter_runner.run_agent_async(
+            kind=kind,
+            tier=tier,
+            prompt=prompt,
+            append_system=append_system,
+            output_format=output_format,
+            subject=subject,
+        )
+
     api_key = await sync_to_async(_check_gates)(exempt_daily_cap=False)
     options = await sync_to_async(_snapshot_options)(
         tier, api_key, kind, append_system, output_format, partial_messages=True

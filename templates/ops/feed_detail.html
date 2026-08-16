@@ -250,14 +250,7 @@
             </button>
             <span class="text-xs text-muted">Fix the violations above to unlock approve.</span>
           {% endif %}
-          <form method="post" class="flex min-w-40 grow flex-wrap items-center gap-2">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="reject" />
-            <div class="min-w-0 grow">
-              <input type="text" name="reason" required placeholder="Reject reason (required)" class="field-input" />
-            </div>
-            <button type="submit" class="btn-danger-ghost">Reject</button>
-          </form>
+          {% include "ops/_feed_reject_form.html" %}
         </div>
       </div>
     {% endif %}
@@ -292,6 +285,16 @@
             {% if feed.error %}Retry extraction{% else %}Run extraction{% endif %}
           </button>
         </form>
+      </div>
+
+      <div class="card mb-6">
+        <div class="card-header">
+          <h2 class="card-title">Decision</h2>
+          <span class="text-xs text-muted">reject closes this capture without writing to the brain</span>
+        </div>
+        <div class="card-body flex flex-wrap items-center gap-3">
+          {% include "ops/_feed_reject_form.html" %}
+        </div>
       </div>
     {% endif %}
   {% endif %}

@@ -20,6 +20,7 @@ RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin app
 
 WORKDIR /app
 COPY requirements.txt .
+COPY packages/tiered_openrouter ./packages/tiered_openrouter
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Build-time smoke test (grill C1): the SDK imports and its bundled CLI

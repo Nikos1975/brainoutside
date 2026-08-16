@@ -31,6 +31,22 @@ from .nav import ops_context
 _SECTIONS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("Branding", "", ("APP_NAME",)),
     (
+        "OpenRouter",
+        "fallback prices are infrastructure-controlled and fail closed",
+        (
+            "AI_PROVIDER",
+            "OPENROUTER_API_KEY",
+            "OPENROUTER_MODEL_PUBLIC",
+            "OPENROUTER_MODEL_READER",
+            "OPENROUTER_MODEL_FEEDER",
+            "OPENROUTER_FALLBACK_PRICES",
+            "OPENROUTER_CONTEXT_MAX_CHARS",
+            "OPENROUTER_MAX_OUTPUT_TOKENS_READER",
+            "OPENROUTER_MAX_OUTPUT_TOKENS_FEEDER",
+            "OPENROUTER_SITE_URL",
+        ),
+    ),
+    (
         "Claude SDK",
         "",
         (
