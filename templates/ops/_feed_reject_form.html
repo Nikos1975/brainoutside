@@ -1,0 +1,8 @@
+<form method="post" class="flex min-w-40 grow flex-wrap items-center gap-2">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="reject" />
+  <div class="min-w-0 grow">
+    <input type="text" name="reason" required placeholder="Reject reason (required)" class="field-input" />
+  </div>
+  <button type="submit" class="btn-danger-ghost">Reject</button>
+</form>
